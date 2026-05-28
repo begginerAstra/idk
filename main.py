@@ -1,320 +1,347 @@
 import os
-import asyncio
+import io
 from datetime import datetime, timezone
 
-import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-ROBLOX_USERNAMES_URL = "https://users.roblox.com/v1/usernames/users"
-ROBLOX_USERS_URL = "https://users.roblox.com/v1/users/{user_id}"
-ROBLOX_AVATAR_HEADSHOT_URL = "https://thumbnails.roblox.com/v1/users/avatar-headshot"
-ROBLOX_AVATAR_URL = "https://thumbnails.roblox.com/v1/users/avatar"
-ROBLOX_FRIENDS_URL = "https://friends.roblox.com/v1/users/{user_id}/friends/count"
-ROBLOX_FOLLOWERS_URL = "https://friends.roblox.com/v1/users/{user_id}/followers/count"
-ROBLOX_FOLLOWING_URL = "https://friends.roblox.com/v1/users/{user_id}/followings/count"
-ROBLOX_GROUPS_URL = "https://groups.roblox.com/v2/users/{user_id}/groups/roles"
-ROBLOX_BADGES_URL = "https://badges.roblox.com/v1/users/{user_id}/badges"
-ROBLOX_PRESENCE_URL = "https://presence.roblox.com/v1/presence/users"
-ROBLOX_INVENTORY_URL = "https://inventory.roblox.com/v1/users/{user_id}/assets/collectibles"
-ROBLOX_PROFILE_URL = "https://www.roblox.com/users/{user_id}/profile"
+STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID", "0"))
+TICKET_CATEGORY_ID = int(os.getenv("TICKET_CATEGORY_ID", "0"))
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0"))
+TICKET_PREFIX = os.getenv("TICKET_PREFIX", "ticket")
+BRAND_NAME = os.getenv("BRAND_NAME", "Astra Support")
 
-COLOR_OK = 0x2F80ED
+COLOR_MAIN = 0x2F80ED
+COLOR_SUCCESS = 0x27AE60
 COLOR_WARN = 0xF2C94C
 COLOR_ERROR = 0xEB5757
 
 
-def fmt_number(value: int | None) -> str:
-    if value is None:
-        return "N/A"
-    return f"{value:,}".replace(",", ".")
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
-def account_age(created: str | None) -> str:
-    if not created:
-        return "N/A"
-    try:
-        dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
-        days = (datetime.now(timezone.utc) - dt).days
-        return f"{days} dias"
-    except Exception:
-        return "N/A"
+def format_dt(dt: datetime) -> str:
+    return dt.strftime("%d/%m/%Y %H:%M UTC")
 
 
-def roblox_time(created: str | None) -> str:
-    if not created:
-        return "N/A"
-    try:
-        dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
-        return dt.strftime("%d/%m/%Y")
-    except Exception:
-        return "N/A"
+def is_staff(member: discord.Member) -> bool:
+    if member.guild_permissions.manage_channels or member.guild_permissions.administrator:
+        return True
+    if STAFF_ROLE_ID:
+        return any(role.id == STAFF_ROLE_ID for role in member.roles)
+    return False
 
 
-class RobloxClient:
-    def __init__(self, session: aiohttp.ClientSession):
-        self.session = session
+def ticket_topic(user_id: int) -> str:
+    return f"ticket_owner={user_id}"
 
-    async def request_json(self, method: str, url: str, **kwargs):
+
+def get_ticket_owner_id(channel: discord.TextChannel) -> int | None:
+    if not channel.topic:
+        return None
+    for part in channel.topic.split():
+        if part.startswith("ticket_owner="):
+            raw = part.replace("ticket_owner=", "").strip()
+            if raw.isdigit():
+                return int(raw)
+    return None
+
+
+async def send_log(guild: discord.Guild, embed: discord.Embed, file: discord.File | None = None):
+    if not LOG_CHANNEL_ID:
+        return
+    channel = guild.get_channel(LOG_CHANNEL_ID)
+    if isinstance(channel, discord.TextChannel):
         try:
-            async with self.session.request(method, url, timeout=aiohttp.ClientTimeout(total=15), **kwargs) as resp:
-                if resp.status in (403, 404):
-                    return None
-                resp.raise_for_status()
-                return await resp.json()
-        except Exception:
-            return None
-
-    async def resolve_user(self, username: str):
-        payload = {"usernames": [username], "excludeBannedUsers": False}
-        data = await self.request_json("POST", ROBLOX_USERNAMES_URL, json=payload)
-        if not data or not data.get("data"):
-            return None
-        return data["data"][0]
-
-    async def get_user(self, user_id: int):
-        return await self.request_json("GET", ROBLOX_USERS_URL.format(user_id=user_id))
-
-    async def get_count(self, url: str):
-        data = await self.request_json("GET", url)
-        if not data:
-            return None
-        return data.get("count")
-
-    async def get_thumbnail(self, user_id: int, avatar: bool = False):
-        url = ROBLOX_AVATAR_URL if avatar else ROBLOX_AVATAR_HEADSHOT_URL
-        params = {"userIds": str(user_id), "size": "420x420", "format": "Png", "isCircular": "false"}
-        data = await self.request_json("GET", url, params=params)
-        try:
-            return data["data"][0]["imageUrl"]
-        except Exception:
-            return None
-
-    async def get_groups(self, user_id: int):
-        data = await self.request_json("GET", ROBLOX_GROUPS_URL.format(user_id=user_id))
-        return data.get("data", []) if data else []
-
-    async def get_badges(self, user_id: int, limit: int = 5):
-        params = {"limit": min(limit, 10), "sortOrder": "Desc"}
-        data = await self.request_json("GET", ROBLOX_BADGES_URL.format(user_id=user_id), params=params)
-        return data.get("data", []) if data else []
-
-    async def get_presence(self, user_id: int):
-        data = await self.request_json("POST", ROBLOX_PRESENCE_URL, json={"userIds": [user_id]})
-        try:
-            return data["userPresences"][0]
-        except Exception:
-            return None
-
-    async def get_collectibles(self, user_id: int, limit: int = 10):
-        params = {"limit": min(limit, 100), "sortOrder": "Desc"}
-        data = await self.request_json("GET", ROBLOX_INVENTORY_URL.format(user_id=user_id), params=params)
-        return data.get("data", []) if data else []
-
-
-def presence_text(presence: dict | None) -> str:
-    if not presence:
-        return "Indisponível"
-    kind = presence.get("userPresenceType", 0)
-    names = {0: "Offline", 1: "Online", 2: "Em jogo", 3: "No Studio"}
-    text = names.get(kind, "Desconhecido")
-    game = presence.get("lastLocation")
-    if game and kind in (2, 3):
-        text += f" — {game}"
-    return text
-
-
-def risk_score(user: dict, followers: int | None, friends: int | None, groups: list, collectibles: list) -> tuple[int, str]:
-    score = 100
-    created = user.get("created")
-    age_days = 0
-    if created:
-        try:
-            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
-            age_days = (datetime.now(timezone.utc) - dt).days
-        except Exception:
+            await channel.send(embed=embed, file=file)
+        except discord.HTTPException:
             pass
 
-    if user.get("isBanned"):
-        score -= 50
-    if age_days and age_days < 30:
-        score -= 25
-    elif age_days and age_days < 180:
-        score -= 10
-    if followers is not None and followers < 5:
-        score -= 5
-    if friends is not None and friends < 10:
-        score -= 5
-    if len(groups) == 0:
-        score -= 5
-    if len(collectibles) > 0:
-        score += 5
 
-    score = max(0, min(100, score))
-    if score >= 80:
-        label = "Baixo risco"
-    elif score >= 55:
-        label = "Risco médio"
-    else:
-        label = "Alto risco"
-    return score, label
+async def create_transcript(channel: discord.TextChannel) -> discord.File:
+    lines: list[str] = []
+    lines.append(f"Transcript do canal: #{channel.name}")
+    lines.append(f"Canal ID: {channel.id}")
+    lines.append(f"Gerado em: {format_dt(utc_now())}")
+    lines.append("=" * 60)
 
+    async for message in channel.history(limit=None, oldest_first=True):
+        created = message.created_at.strftime("%d/%m/%Y %H:%M:%S UTC")
+        author = f"{message.author} ({message.author.id})"
+        content = message.content or ""
+        if message.attachments:
+            attachment_urls = " | ".join(att.url for att in message.attachments)
+            content += f"\n[ANEXOS] {attachment_urls}"
+        if message.embeds:
+            content += f"\n[EMBEDS] {len(message.embeds)} embed(s)"
+        lines.append(f"[{created}] {author}: {content}")
 
-class StalkView(discord.ui.View):
-    def __init__(self, user_id: int):
-        super().__init__(timeout=120)
-        self.add_item(discord.ui.Button(label="Abrir perfil", url=ROBLOX_PROFILE_URL.format(user_id=user_id)))
+    data = "\n".join(lines).encode("utf-8")
+    buffer = io.BytesIO(data)
+    filename = f"transcript-{channel.name}-{int(utc_now().timestamp())}.txt"
+    return discord.File(buffer, filename=filename)
 
 
-class AstraBot(commands.Bot):
+class TicketOpenView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Abrir Ticket", emoji="🎫", style=discord.ButtonStyle.primary, custom_id="ticket:open")
+    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("❌ Esse botão só funciona dentro de um servidor.", ephemeral=True)
+            return
+
+        guild = interaction.guild
+        member = interaction.user
+
+        for channel in guild.text_channels:
+            if get_ticket_owner_id(channel) == member.id:
+                await interaction.response.send_message(f"⚠️ Você já tem um ticket aberto: {channel.mention}", ephemeral=True)
+                return
+
+        category = guild.get_channel(TICKET_CATEGORY_ID) if TICKET_CATEGORY_ID else None
+        if category is not None and not isinstance(category, discord.CategoryChannel):
+            category = None
+
+        overwrites: dict[discord.Role | discord.Member, discord.PermissionOverwrite] = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True, embed_links=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True, attach_files=True, embed_links=True),
+        }
+
+        staff_role = guild.get_role(STAFF_ROLE_ID) if STAFF_ROLE_ID else None
+        if staff_role:
+            overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True, attach_files=True, embed_links=True)
+
+        safe_name = member.name.lower().replace(" ", "-")[:24]
+        channel_name = f"{TICKET_PREFIX}-{safe_name}"
+
+        try:
+            channel = await guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                overwrites=overwrites,
+                topic=ticket_topic(member.id),
+                reason=f"Ticket aberto por {member} ({member.id})",
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ Não tenho permissão para criar canais. Me dê `Manage Channels`.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="🎫 Ticket aberto",
+            description=(
+                f"Olá {member.mention}, explique seu problema com o máximo de detalhes.\n\n"
+                "Nossa equipe vai te responder assim que possível."
+            ),
+            color=COLOR_MAIN,
+            timestamp=utc_now(),
+        )
+        embed.add_field(name="Usuário", value=f"{member.mention}\n`{member.id}`", inline=True)
+        embed.add_field(name="Status", value="🟢 Aberto", inline=True)
+        embed.set_footer(text=BRAND_NAME)
+
+        await channel.send(content=f"{member.mention} {staff_role.mention if staff_role else ''}", embed=embed, view=TicketManageView())
+        await interaction.response.send_message(f"✅ Ticket criado: {channel.mention}", ephemeral=True)
+
+        log_embed = discord.Embed(title="🎫 Ticket criado", color=COLOR_SUCCESS, timestamp=utc_now())
+        log_embed.add_field(name="Usuário", value=f"{member.mention} (`{member.id}`)", inline=False)
+        log_embed.add_field(name="Canal", value=channel.mention, inline=False)
+        await send_log(guild, log_embed)
+
+
+class TicketManageView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Assumir", emoji="🙋", style=discord.ButtonStyle.secondary, custom_id="ticket:claim")
+    async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
+            return
+        if not is_staff(interaction.user):
+            await interaction.response.send_message("❌ Apenas staff pode assumir tickets.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="🙋 Ticket assumido",
+            description=f"Este ticket foi assumido por {interaction.user.mention}.",
+            color=COLOR_MAIN,
+            timestamp=utc_now(),
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @discord.ui.button(label="Fechar", emoji="🔒", style=discord.ButtonStyle.danger, custom_id="ticket:close")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
+            return
+
+        channel = interaction.channel
+        owner_id = get_ticket_owner_id(channel)
+        allowed = is_staff(interaction.user) or interaction.user.id == owner_id
+        if not allowed:
+            await interaction.response.send_message("❌ Você não pode fechar este ticket.", ephemeral=True)
+            return
+
+        await interaction.response.send_message("⚠️ Tem certeza que deseja fechar este ticket?", view=TicketConfirmCloseView(), ephemeral=True)
+
+
+class TicketConfirmCloseView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="Confirmar fechamento", emoji="✅", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
+            return
+
+        channel = interaction.channel
+        owner_id = get_ticket_owner_id(channel)
+        allowed = is_staff(interaction.user) or interaction.user.id == owner_id
+        if not allowed:
+            await interaction.response.send_message("❌ Você não pode fechar este ticket.", ephemeral=True)
+            return
+
+        await interaction.response.edit_message(content="🔒 Fechando ticket e gerando transcript...", view=None)
+
+        transcript = await create_transcript(channel)
+        log_embed = discord.Embed(title="🔒 Ticket fechado", color=COLOR_WARN, timestamp=utc_now())
+        log_embed.add_field(name="Canal", value=f"#{channel.name}\n`{channel.id}`", inline=False)
+        log_embed.add_field(name="Fechado por", value=f"{interaction.user.mention}\n`{interaction.user.id}`", inline=True)
+        if owner_id:
+            log_embed.add_field(name="Dono do ticket", value=f"<@{owner_id}>\n`{owner_id}`", inline=True)
+        log_embed.set_footer(text=BRAND_NAME)
+
+        await send_log(interaction.guild, log_embed, transcript)
+
+        try:
+            await channel.send("🔒 Ticket fechado. Este canal será deletado em alguns segundos.")
+        except discord.HTTPException:
+            pass
+        await channel.delete(reason=f"Ticket fechado por {interaction.user} ({interaction.user.id})")
+
+    @discord.ui.button(label="Cancelar", emoji="❌", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Fechamento cancelado.", view=None)
+
+
+class TicketBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
         super().__init__(command_prefix="!", intents=intents)
-        self.http_session: aiohttp.ClientSession | None = None
 
     async def setup_hook(self):
-        self.http_session = aiohttp.ClientSession(headers={"User-Agent": "AstraBot/1.0"})
+        self.add_view(TicketOpenView())
+        self.add_view(TicketManageView())
         await self.tree.sync()
 
-    async def close(self):
-        if self.http_session:
-            await self.http_session.close()
-        await super().close()
 
-
-bot = AstraBot()
+bot = TicketBot()
 
 
 @bot.event
 async def on_ready():
-    print(f"✅ Logado como {bot.user} | Slash commands sincronizados")
+    print(f"✅ {bot.user} online | Sistema de tickets carregado")
 
 
-@bot.tree.command(name="stalk", description="Analisa um perfil Roblox com score, status, grupos, badges e limiteds.")
-@app_commands.describe(username="Nome de usuário do Roblox")
-async def stalk(interaction: discord.Interaction, username: str):
-    await interaction.response.defer(thinking=True)
-
-    if not bot.http_session:
-        await interaction.followup.send("❌ Sessão HTTP indisponível. Reinicie o bot.", ephemeral=True)
-        return
-
-    client = RobloxClient(bot.http_session)
-    resolved = await client.resolve_user(username.strip())
-    if not resolved:
-        embed = discord.Embed(
-            title="❌ Usuário não encontrado",
-            description=f"Não encontrei nenhum perfil Roblox chamado `{username}`.",
-            color=COLOR_ERROR,
-        )
-        await interaction.followup.send(embed=embed)
-        return
-
-    user_id = resolved["id"]
-    user, headshot, avatar, friends, followers, following, groups, badges, presence, collectibles = await asyncio.gather(
-        client.get_user(user_id),
-        client.get_thumbnail(user_id, avatar=False),
-        client.get_thumbnail(user_id, avatar=True),
-        client.get_count(ROBLOX_FRIENDS_URL.format(user_id=user_id)),
-        client.get_count(ROBLOX_FOLLOWERS_URL.format(user_id=user_id)),
-        client.get_count(ROBLOX_FOLLOWING_URL.format(user_id=user_id)),
-        client.get_groups(user_id),
-        client.get_badges(user_id, 5),
-        client.get_presence(user_id),
-        client.get_collectibles(user_id, 10),
-    )
-
-    if not user:
-        await interaction.followup.send("❌ Não consegui carregar os dados desse perfil agora.")
-        return
-
-    score, label = risk_score(user, followers, friends, groups, collectibles)
-    display = user.get("displayName") or resolved.get("displayName") or username
-    real_name = user.get("name") or resolved.get("name") or username
-    description = user.get("description") or "Sem bio pública."
-    if len(description) > 500:
-        description = description[:497] + "..."
-
+@bot.tree.command(name="ticket-panel", description="Envia o painel profissional de tickets neste canal.")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def ticket_panel(interaction: discord.Interaction):
     embed = discord.Embed(
-        title=f"🕵️ Stalk Roblox — {display}",
-        url=ROBLOX_PROFILE_URL.format(user_id=user_id),
-        description=description,
-        color=COLOR_OK if score >= 80 else COLOR_WARN if score >= 55 else COLOR_ERROR,
-    )
-    embed.set_author(name=f"@{real_name} • ID {user_id}", icon_url=headshot or discord.Embed.Empty)
-    if avatar:
-        embed.set_image(url=avatar)
-    if headshot:
-        embed.set_thumbnail(url=headshot)
-
-    embed.add_field(
-        name="📌 Conta",
-        value=(
-            f"Criada em: **{roblox_time(user.get('created'))}**\n"
-            f"Idade: **{account_age(user.get('created'))}**\n"
-            f"Status: **{'Banida' if user.get('isBanned') else 'Ativa'}**"
+        title=f"🎫 {BRAND_NAME}",
+        description=(
+            "Precisa de ajuda? Clique no botão abaixo para abrir um ticket privado.\n\n"
+            "**Use para:**\n"
+            "• Suporte\n"
+            "• Compras\n"
+            "• Dúvidas\n"
+            "• Denúncias\n\n"
+            "Evite abrir tickets sem necessidade."
         ),
-        inline=True,
+        color=COLOR_MAIN,
+        timestamp=utc_now(),
     )
-    embed.add_field(
-        name="📊 Social",
-        value=(
-            f"Amigos: **{fmt_number(friends)}**\n"
-            f"Seguidores: **{fmt_number(followers)}**\n"
-            f"Seguindo: **{fmt_number(following)}**"
-        ),
-        inline=True,
-    )
-    embed.add_field(
-        name="🧭 Presença",
-        value=f"**{presence_text(presence)}**",
-        inline=False,
-    )
-    embed.add_field(
-        name="🛡️ Score de confiança",
-        value=f"**{score}/100** — {label}",
-        inline=True,
-    )
-    embed.add_field(
-        name="👥 Grupos",
-        value=f"**{fmt_number(len(groups))}** grupos encontrados" if groups else "Nenhum grupo público encontrado.",
-        inline=True,
-    )
-    embed.add_field(
-        name="💎 Limiteds públicos",
-        value=f"**{fmt_number(len(collectibles))}** item(ns) carregados" if collectibles else "Inventário fechado ou sem collectibles públicos.",
-        inline=True,
-    )
+    embed.set_footer(text="Sistema profissional de tickets")
+    await interaction.response.send_message(embed=embed, view=TicketOpenView())
 
-    top_groups = []
-    for item in groups[:5]:
-        group = item.get("group", {})
-        role = item.get("role", {})
-        top_groups.append(f"• **{group.get('name', 'Grupo')}** — {role.get('name', 'Membro')}")
-    if top_groups:
-        embed.add_field(name="🏷️ Principais grupos", value="\n".join(top_groups), inline=False)
 
-    top_badges = []
-    for badge in badges[:5]:
-        top_badges.append(f"• {badge.get('name', 'Badge')}")
-    if top_badges:
-        embed.add_field(name="🎖️ Badges recentes", value="\n".join(top_badges), inline=False)
+@ticket_panel.error
+async def ticket_panel_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("❌ Você precisa da permissão `Manage Server` para usar este comando.", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Ocorreu um erro ao criar o painel.", ephemeral=True)
 
-    top_limiteds = []
-    for item in collectibles[:5]:
-        name = item.get("name") or item.get("assetName") or "Limited"
-        rap = item.get("recentAveragePrice")
-        top_limiteds.append(f"• **{name}** — RAP: {fmt_number(rap)}")
-    if top_limiteds:
-        embed.add_field(name="💰 Limiteds vistos", value="\n".join(top_limiteds), inline=False)
 
-    embed.set_footer(text="Astra /stalk • Dados públicos da Roblox")
-    await interaction.followup.send(embed=embed, view=StalkView(user_id))
+@bot.tree.command(name="ticket-add", description="Adiciona um usuário ao ticket atual.")
+@app_commands.describe(user="Usuário que será adicionado ao ticket")
+async def ticket_add(interaction: discord.Interaction, user: discord.Member):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
+        return
+    if not is_staff(interaction.user):
+        await interaction.response.send_message("❌ Apenas staff pode adicionar usuários ao ticket.", ephemeral=True)
+        return
+    if get_ticket_owner_id(interaction.channel) is None:
+        await interaction.response.send_message("❌ Use este comando dentro de um canal de ticket.", ephemeral=True)
+        return
+
+    await interaction.channel.set_permissions(user, view_channel=True, send_messages=True, read_message_history=True, attach_files=True, embed_links=True)
+    await interaction.response.send_message(f"✅ {user.mention} foi adicionado ao ticket.")
+
+
+@bot.tree.command(name="ticket-remove", description="Remove um usuário do ticket atual.")
+@app_commands.describe(user="Usuário que será removido do ticket")
+async def ticket_remove(interaction: discord.Interaction, user: discord.Member):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
+        return
+    if not is_staff(interaction.user):
+        await interaction.response.send_message("❌ Apenas staff pode remover usuários do ticket.", ephemeral=True)
+        return
+    if get_ticket_owner_id(interaction.channel) is None:
+        await interaction.response.send_message("❌ Use este comando dentro de um canal de ticket.", ephemeral=True)
+        return
+
+    await interaction.channel.set_permissions(user, overwrite=None)
+    await interaction.response.send_message(f"✅ {user.mention} foi removido do ticket.")
+
+
+@bot.tree.command(name="ticket-rename", description="Renomeia o ticket atual.")
+@app_commands.describe(name="Novo nome do canal, sem espaços")
+async def ticket_rename(interaction: discord.Interaction, name: str):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
+        return
+    if not is_staff(interaction.user):
+        await interaction.response.send_message("❌ Apenas staff pode renomear tickets.", ephemeral=True)
+        return
+    if get_ticket_owner_id(interaction.channel) is None:
+        await interaction.response.send_message("❌ Use este comando dentro de um canal de ticket.", ephemeral=True)
+        return
+
+    clean = name.lower().replace(" ", "-")[:80]
+    await interaction.channel.edit(name=clean, reason=f"Ticket renomeado por {interaction.user}")
+    await interaction.response.send_message(f"✅ Ticket renomeado para `{clean}`.")
+
+
+@bot.tree.command(name="ticket-close", description="Fecha o ticket atual com transcript.")
+async def ticket_close(interaction: discord.Interaction):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member) or not isinstance(interaction.channel, discord.TextChannel):
+        return
+    owner_id = get_ticket_owner_id(interaction.channel)
+    if owner_id is None:
+        await interaction.response.send_message("❌ Use este comando dentro de um canal de ticket.", ephemeral=True)
+        return
+    if not (is_staff(interaction.user) or interaction.user.id == owner_id):
+        await interaction.response.send_message("❌ Você não pode fechar este ticket.", ephemeral=True)
+        return
+    await interaction.response.send_message("⚠️ Tem certeza que deseja fechar este ticket?", view=TicketConfirmCloseView(), ephemeral=True)
 
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
-        raise RuntimeError("Defina a variável de ambiente DISCORD_TOKEN no Railway.")
+        raise RuntimeError("Defina a variável DISCORD_TOKEN no Railway.")
     bot.run(DISCORD_TOKEN)
