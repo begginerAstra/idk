@@ -87,7 +87,7 @@ class DB:
         )
         self.conn.commit()
 
-    def user(self, member: discord.User | discord.Member, guild_id: int) -> dict:
+    def user(self, member, guild_id: int) -> dict:
         row = self.conn.execute("SELECT * FROM users WHERE user_id=?", (member.id,)).fetchone()
         if not row:
             self.conn.execute(
@@ -157,7 +157,7 @@ def badges_text(u: dict) -> str:
     return "  ".join(out)
 
 
-def profile_embed(member: discord.User | discord.Member, u: dict) -> discord.Embed:
+def profile_embed(member, u: dict) -> discord.Embed:
     need = xp_needed(u["level"])
     embed = discord.Embed(
         title=f"{e('PERFIL')} Perfil de {member.display_name}",
@@ -217,7 +217,7 @@ async def demo(interaction: discord.Interaction):
 
 @bot.tree.command(name="perfil", description="Mostra seu perfil ou o perfil de outro membro.")
 @app_commands.describe(membro="Membro que você quer ver")
-async def perfil(interaction: discord.Interaction, membro: discord.Member | None = None):
+async def perfil(interaction: discord.Interaction, membro: discord.Member = None):
     target = membro or interaction.user
     u = db.user(target, guild_id(interaction))
     await interaction.response.send_message(embed=profile_embed(target, u))
