@@ -7,40 +7,69 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from emojis import e
+
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-BRAND_NAME = os.getenv("BRAND_NAME", "Cantinho dos Gatinhos")
-DATABASE_PATH = os.getenv("DATABASE_PATH", "cats.db")
+BRAND_NAME = os.getenv("BRAND_NAME", "Astra Social")
+DATABASE_PATH = os.getenv("DATABASE_PATH", "astra_social.db")
+CURRENCY_NAME = os.getenv("CURRENCY_NAME", "Astra Coins")
 
-COLOR_MAIN = 0xF7A8C7
-COLOR_OK = 0x7ED957
-COLOR_WARN = 0xFFD966
-COLOR_ERROR = 0xFF6B6B
+COLOR_MAIN = 0x8A2BFF
+COLOR_OK = 0x2ECC71
+COLOR_WARN = 0xF1C40F
+COLOR_ERROR = 0xE74C3C
 
-CAT_TYPES = {
-    "laranja": {"emoji": "🐈", "label": "Gatinho Laranja"},
-    "preto": {"emoji": "🐈‍⬛", "label": "Gatinho Preto"},
-    "branco": {"emoji": "🤍", "label": "Gatinho Branco"},
-    "cinza": {"emoji": "🩶", "label": "Gatinho Cinza"},
-    "siames": {"emoji": "😺", "label": "Gatinho Siamês"},
+SHOP_ITEMS = {
+    "vip_badge": {
+        "name": "Badge VIP",
+        "price": 450,
+        "emoji": e("VIP"),
+        "type": "badge",
+        "badge": "VIP",
+        "desc": "Badge visual para o perfil.",
+    },
+    "premium_badge": {
+        "name": "Badge Premium",
+        "price": 850,
+        "emoji": e("PREMIUM"),
+        "type": "badge",
+        "badge": "Premium",
+        "desc": "Badge premium para destacar o perfil.",
+    },
+    "coroa": {
+        "name": "Coroa Real",
+        "price": 1200,
+        "emoji": e("COROA"),
+        "type": "badge",
+        "badge": "Coroa",
+        "desc": "Badge rara para membros importantes.",
+    },
+    "diamante": {
+        "name": "Diamante Azul",
+        "price": 1600,
+        "emoji": e("DIAMANTE"),
+        "type": "badge",
+        "badge": "Diamante",
+        "desc": "Badge lendária para perfis chamativos.",
+    },
+    "caixa": {
+        "name": "Caixa Misteriosa",
+        "price": 300,
+        "emoji": e("CAIXA"),
+        "type": "box",
+        "desc": "Abre e ganha moedas ou XP aleatório.",
+    },
 }
 
-SHOP = {
-    "racao": {"name": "Ração Premium", "emoji": "🍗", "price": 35, "kind": "food", "power": 28, "desc": "+28 fome"},
-    "atum": {"name": "Atum Chique", "emoji": "🐟", "price": 55, "kind": "food", "power": 45, "desc": "+45 fome"},
-    "bolinha": {"name": "Bolinha Colorida", "emoji": "🧶", "price": 45, "kind": "toy", "power": 25, "desc": "+25 felicidade"},
-    "varinha": {"name": "Varinha de Penas", "emoji": "🪶", "price": 70, "kind": "toy", "power": 42, "desc": "+42 felicidade"},
-    "caminha": {"name": "Caminha Fofinha", "emoji": "🛏️", "price": 85, "kind": "bed", "power": 45, "desc": "+45 energia"},
-    "laco": {"name": "Laço Rosa", "emoji": "🎀", "price": 120, "kind": "cosmetic", "power": 0, "desc": "cosmético"},
-    "coroa": {"name": "Coroa Real", "emoji": "👑", "price": 250, "kind": "cosmetic", "power": 0, "desc": "cosmético raro"},
-}
+ITEM_CHOICES = [
+    app_commands.Choice(name=f"{item['emoji']} {item['name']}", value=item_id)
+    for item_id, item in SHOP_ITEMS.items()
+]
 
-MOODS = [
-    "ronronando baixinho",
-    "fazendo pãozinho",
-    "te olhando com carinha pidona",
-    "dormindo enroladinho",
-    "caçando uma meia perdida",
-    "pedindo carinho",
+RANK_CHOICES = [
+    app_commands.Choice(name="Level", value="level"),
+    app_commands.Choice(name="Moedas", value="coins"),
+    app_commands.Choice(name="Reputação", value="rep"),
 ]
 
 
@@ -52,40 +81,23 @@ def today_key() -> str:
     return date.today().isoformat()
 
 
-def context_id(interaction: discord.Interaction) -> int:
-    return interaction.guild.id if interaction.guild else 0
-
-
-def context_name(interaction: discord.Interaction) -> str:
-    return interaction.guild.name if interaction.guild else "DM"
-
-
-def clamp(value: int, minimum: int = 0, maximum: int = 100) -> int:
-    return max(minimum, min(maximum, value))
-
-
-def bar(value: int) -> str:
-    filled = max(0, min(10, round(value / 10)))
+def progress_bar(current: int, needed: int) -> str:
+    if needed <= 0:
+        return "██████████"
+    filled = min(10, max(0, round((current / needed) * 10)))
     return "█" * filled + "░" * (10 - filled)
 
 
-def rarity_title(level: int) -> str:
-    if level >= 30:
-        return "Lenda Felina"
-    if level >= 20:
-        return "Mestre dos Ronrons"
-    if level >= 10:
-        return "Tutor Experiente"
-    if level >= 5:
-        return "Cuidador Carinhoso"
-    return "Novo Tutor"
-
-
 def xp_needed(level: int) -> int:
-    return 100 + (level - 1) * 35
+    return 100 + (level - 1) * 50
 
 
-class CatDatabase:
+def clean_text(text: str, limit: int = 120) -> str:
+    text = text.strip().replace("`", "'")
+    return text[:limit] if text else ""
+
+
+class Database:
     def __init__(self, path: str):
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
@@ -93,230 +105,195 @@ class CatDatabase:
 
     def setup(self):
         cur = self.conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS cats (
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
-                guild_id INTEGER NOT NULL,
-                owner_name TEXT NOT NULL,
+                guild_id INTEGER NOT NULL DEFAULT 0,
                 name TEXT NOT NULL,
-                cat_type TEXT NOT NULL,
-                hunger INTEGER NOT NULL DEFAULT 80,
-                happiness INTEGER NOT NULL DEFAULT 80,
-                energy INTEGER NOT NULL DEFAULT 80,
-                hygiene INTEGER NOT NULL DEFAULT 80,
-                coins INTEGER NOT NULL DEFAULT 120,
-                level INTEGER NOT NULL DEFAULT 1,
+                bio TEXT NOT NULL DEFAULT 'sem bio configurada ainda',
+                coins INTEGER NOT NULL DEFAULT 250,
                 xp INTEGER NOT NULL DEFAULT 0,
-                adopted_at INTEGER NOT NULL,
-                last_decay INTEGER NOT NULL,
+                level INTEGER NOT NULL DEFAULT 1,
+                rep INTEGER NOT NULL DEFAULT 0,
+                badges TEXT NOT NULL DEFAULT '',
+                banner TEXT NOT NULL DEFAULT 'default_dark',
+                color TEXT NOT NULL DEFAULT '#8A2BFF',
                 last_daily TEXT,
-                last_work INTEGER NOT NULL DEFAULT 0
+                last_work INTEGER NOT NULL DEFAULT 0,
+                last_rep INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
             )
-        """)
-        cur.execute("""
+            """
+        )
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS inventory (
                 user_id INTEGER NOT NULL,
                 item_id TEXT NOT NULL,
                 quantity INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (user_id, item_id)
             )
-        """)
+            """
+        )
         self.conn.commit()
 
-    def get_cat(self, user_id: int):
-        row = self.conn.execute("SELECT * FROM cats WHERE user_id=?", (user_id,)).fetchone()
-        if not row:
-            return None
-        return self.apply_decay(dict(row))
-
-    def create_cat(self, user_id: int, guild_id: int, owner_name: str, name: str, cat_type: str):
-        ts = now_ts()
-        self.conn.execute("""
-            INSERT INTO cats (user_id, guild_id, owner_name, name, cat_type, hunger, happiness, energy, hygiene, coins, level, xp, adopted_at, last_decay)
-            VALUES (?, ?, ?, ?, ?, 85, 85, 85, 85, 150, 1, 0, ?, ?)
-        """, (user_id, guild_id, owner_name, name, cat_type, ts, ts))
+    def get_user(self, user_id: int, guild_id: int, name: str):
+        row = self.conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if row:
+            return dict(row)
+        self.conn.execute(
+            """
+            INSERT INTO users (user_id, guild_id, name, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, guild_id, name, now_ts()),
+        )
         self.conn.commit()
-        return self.get_cat(user_id)
+        return dict(self.conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone())
 
-    def save_cat(self, cat: dict):
-        self.conn.execute("""
-            UPDATE cats SET owner_name=?, name=?, cat_type=?, hunger=?, happiness=?, energy=?, hygiene=?, coins=?, level=?, xp=?, last_decay=?, last_daily=?, last_work=?, guild_id=?
+    def save_user(self, user: dict):
+        self.conn.execute(
+            """
+            UPDATE users
+            SET guild_id=?, name=?, bio=?, coins=?, xp=?, level=?, rep=?, badges=?, banner=?, color=?, last_daily=?, last_work=?, last_rep=?
             WHERE user_id=?
-        """, (
-            cat["owner_name"], cat["name"], cat["cat_type"], cat["hunger"], cat["happiness"], cat["energy"], cat["hygiene"],
-            cat["coins"], cat["level"], cat["xp"], cat["last_decay"], cat.get("last_daily"), cat.get("last_work", 0), cat.get("guild_id", 0), cat["user_id"]
-        ))
+            """,
+            (
+                user["guild_id"],
+                user["name"],
+                user["bio"],
+                user["coins"],
+                user["xp"],
+                user["level"],
+                user["rep"],
+                user["badges"],
+                user["banner"],
+                user["color"],
+                user.get("last_daily"),
+                user.get("last_work", 0),
+                user.get("last_rep", 0),
+                user["user_id"],
+            ),
+        )
         self.conn.commit()
 
-    def apply_decay(self, cat: dict):
-        current = now_ts()
-        elapsed_hours = max(0, (current - int(cat["last_decay"])) // 3600)
-        if elapsed_hours <= 0:
-            return cat
-        cat["hunger"] = clamp(cat["hunger"] - elapsed_hours * 3)
-        cat["happiness"] = clamp(cat["happiness"] - elapsed_hours * 2)
-        cat["energy"] = clamp(cat["energy"] - elapsed_hours * 2)
-        cat["hygiene"] = clamp(cat["hygiene"] - elapsed_hours * 2)
-        cat["last_decay"] = current
-        self.save_cat(cat)
-        return cat
-
-    def add_item(self, user_id: int, item_id: str, quantity: int):
-        self.conn.execute("""
-            INSERT INTO inventory (user_id, item_id, quantity) VALUES (?, ?, ?)
+    def add_item(self, user_id: int, item_id: str, quantity: int = 1):
+        self.conn.execute(
+            """
+            INSERT INTO inventory (user_id, item_id, quantity)
+            VALUES (?, ?, ?)
             ON CONFLICT(user_id, item_id) DO UPDATE SET quantity = quantity + excluded.quantity
-        """, (user_id, item_id, quantity))
+            """,
+            (user_id, item_id, quantity),
+        )
         self.conn.commit()
-
-    def use_item(self, user_id: int, item_id: str) -> bool:
-        row = self.conn.execute("SELECT quantity FROM inventory WHERE user_id=? AND item_id=?", (user_id, item_id)).fetchone()
-        if not row or row["quantity"] <= 0:
-            return False
-        quantity = row["quantity"] - 1
-        if quantity <= 0:
-            self.conn.execute("DELETE FROM inventory WHERE user_id=? AND item_id=?", (user_id, item_id))
-        else:
-            self.conn.execute("UPDATE inventory SET quantity=? WHERE user_id=? AND item_id=?", (quantity, user_id, item_id))
-        self.conn.commit()
-        return True
 
     def inventory(self, user_id: int):
         rows = self.conn.execute("SELECT item_id, quantity FROM inventory WHERE user_id=? ORDER BY item_id", (user_id,)).fetchall()
         return [dict(row) for row in rows]
 
-    def leaderboard(self, guild_id: int | None = None, limit: int = 10):
-        if guild_id is None:
-            rows = self.conn.execute("SELECT * FROM cats ORDER BY level DESC, xp DESC, coins DESC LIMIT ?", (limit,)).fetchall()
-        else:
-            rows = self.conn.execute("SELECT * FROM cats WHERE guild_id=? ORDER BY level DESC, xp DESC, coins DESC LIMIT ?", (guild_id, limit)).fetchall()
+    def ranking(self, guild_id: int, mode: str):
+        column = "level" if mode == "level" else "coins" if mode == "coins" else "rep"
+        rows = self.conn.execute(
+            f"SELECT * FROM users WHERE guild_id=? ORDER BY {column} DESC, xp DESC LIMIT 10",
+            (guild_id,),
+        ).fetchall()
         return [dict(row) for row in rows]
 
 
-db = CatDatabase(DATABASE_PATH)
+db = Database(DATABASE_PATH)
 
 
-def cat_emoji(cat: dict) -> str:
-    return CAT_TYPES.get(cat["cat_type"], CAT_TYPES["laranja"])["emoji"]
+def guild_id_of(interaction: discord.Interaction) -> int:
+    return interaction.guild.id if interaction.guild else 0
 
 
-def add_xp(cat: dict, amount: int):
-    cat["xp"] += amount
+def get_profile(interaction: discord.Interaction, member: discord.User | discord.Member | None = None) -> dict:
+    target = member or interaction.user
+    user = db.get_user(target.id, guild_id_of(interaction), str(target))
+    user["name"] = str(target)
+    if interaction.guild:
+        user["guild_id"] = interaction.guild.id
+    db.save_user(user)
+    return user
+
+
+def add_xp(user: dict, amount: int) -> bool:
+    user["xp"] += amount
     leveled = False
-    while cat["xp"] >= xp_needed(cat["level"]):
-        cat["xp"] -= xp_needed(cat["level"])
-        cat["level"] += 1
-        cat["coins"] += 50
+    while user["xp"] >= xp_needed(user["level"]):
+        user["xp"] -= xp_needed(user["level"])
+        user["level"] += 1
+        user["coins"] += 75
         leveled = True
     return leveled
 
 
-def cat_embed(cat: dict, title: str | None = None) -> discord.Embed:
-    health = round((cat["hunger"] + cat["happiness"] + cat["energy"] + cat["hygiene"]) / 4)
+def badge_line(user: dict) -> str:
+    badges = [b for b in user.get("badges", "").split(",") if b]
+    if not badges:
+        return f"{e('BADGE')} nenhuma badge ainda"
+    visual = []
+    for badge in badges[:6]:
+        if badge.lower() == "vip":
+            visual.append(f"{e('VIP')} VIP")
+        elif badge.lower() == "premium":
+            visual.append(f"{e('PREMIUM')} Premium")
+        elif badge.lower() == "coroa":
+            visual.append(f"{e('COROA')} Coroa")
+        elif badge.lower() == "diamante":
+            visual.append(f"{e('DIAMANTE')} Diamante")
+        else:
+            visual.append(f"{e('BADGE')} {badge}")
+    return "  ".join(visual)
+
+
+def profile_embed(target: discord.User | discord.Member, user: dict) -> discord.Embed:
+    needed = xp_needed(user["level"])
     embed = discord.Embed(
-        title=title or f"{cat_emoji(cat)} {cat['name']}",
-        description=f"**{cat['name']}** está {random.choice(MOODS)}.\n**Título:** {rarity_title(cat['level'])}",
+        title=f"{e('PERFIL')} Perfil de {target.display_name}",
+        description=(
+            f"-# perfil social personalizado da comunidade\n\n"
+            f"{e('BIO')} **Bio**\n"
+            f"> {user['bio']}\n\n"
+            f"{e('LEVEL')} **Level:** `{user['level']}`\n"
+            f"{e('XP')} **XP:** `{progress_bar(user['xp'], needed)}` `{user['xp']}/{needed}`\n"
+            f"{e('MOEDA')} **{CURRENCY_NAME}:** `{user['coins']}`\n"
+            f"{e('ESTRELA')} **Reputação:** `{user['rep']}`\n\n"
+            f"{e('BADGE')} **Badges**\n"
+            f"> {badge_line(user)}"
+        ),
         color=COLOR_MAIN,
         timestamp=datetime.now(timezone.utc),
     )
-    embed.add_field(name="🍗 Fome", value=f"`{bar(cat['hunger'])}` {cat['hunger']}%", inline=False)
-    embed.add_field(name="💖 Felicidade", value=f"`{bar(cat['happiness'])}` {cat['happiness']}%", inline=False)
-    embed.add_field(name="⚡ Energia", value=f"`{bar(cat['energy'])}` {cat['energy']}%", inline=False)
-    embed.add_field(name="🧼 Higiene", value=f"`{bar(cat['hygiene'])}` {cat['hygiene']}%", inline=False)
-    embed.add_field(name="✨ Level", value=f"**{cat['level']}** | XP `{cat['xp']}/{xp_needed(cat['level'])}`", inline=True)
-    embed.add_field(name="🪙 Moedas", value=f"**{cat['coins']}**", inline=True)
-    embed.add_field(name="🌡️ Bem-estar", value=f"**{health}%**", inline=True)
-    embed.set_footer(text=BRAND_NAME)
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.set_footer(text=f"{BRAND_NAME} • bot demo personalizável")
     return embed
 
 
-async def require_cat(interaction: discord.Interaction):
-    cat = db.get_cat(interaction.user.id)
-    if not cat:
-        await interaction.response.send_message("🐾 Você ainda não adotou um gatinho. Use `/adotar` primeiro.", ephemeral=True)
-        return None
-    if cat.get("guild_id") == 0 and interaction.guild:
-        cat["guild_id"] = interaction.guild.id
-        db.save_cat(cat)
-    return cat
-
-
-class CatCareView(discord.ui.View):
+class ProfileView(discord.ui.View):
     def __init__(self, owner_id: int):
-        super().__init__(timeout=180)
+        super().__init__(timeout=120)
         self.owner_id = owner_id
 
-    async def check_owner(self, interaction: discord.Interaction) -> bool:
+    @discord.ui.button(label="Daily", style=discord.ButtonStyle.success)
+    async def daily_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("🐾 Esse gatinho não é seu. Use `/adotar` para ter o seu.", ephemeral=True)
-            return False
-        return True
-
-    async def update_cat(self, interaction: discord.Interaction, action: str):
-        if not await self.check_owner(interaction):
+            await interaction.response.send_message("Esse botão é do perfil de outra pessoa.", ephemeral=True)
             return
-        cat = db.get_cat(interaction.user.id)
-        if not cat:
-            await interaction.response.send_message("Use `/adotar` primeiro.", ephemeral=True)
-            return
-        msg = ""
-        if action == "feed":
-            cat["hunger"] = clamp(cat["hunger"] + 18)
-            cat["happiness"] = clamp(cat["happiness"] + 4)
-            xp = 12
-            msg = "🍗 Você alimentou seu gatinho."
-        elif action == "play":
-            if cat["energy"] < 12:
-                await interaction.response.send_message("😴 Seu gatinho está cansado. Deixe ele dormir um pouco.", ephemeral=True)
-                return
-            cat["happiness"] = clamp(cat["happiness"] + 20)
-            cat["energy"] = clamp(cat["energy"] - 10)
-            cat["hunger"] = clamp(cat["hunger"] - 5)
-            cat["coins"] += random.randint(4, 12)
-            xp = 16
-            msg = "🧶 Vocês brincaram juntos."
-        elif action == "pet":
-            cat["happiness"] = clamp(cat["happiness"] + 12)
-            xp = 8
-            msg = "💖 Seu gatinho ronronou com o carinho."
-        elif action == "clean":
-            cat["hygiene"] = clamp(cat["hygiene"] + 25)
-            cat["happiness"] = clamp(cat["happiness"] - 3)
-            xp = 10
-            msg = "🧼 Banho tomado. Ele fingiu que odiou, mas ficou cheiroso."
-        else:
-            cat["energy"] = clamp(cat["energy"] + 30)
-            cat["hunger"] = clamp(cat["hunger"] - 4)
-            xp = 10
-            msg = "😴 Seu gatinho tirou uma soneca gostosa."
-        if interaction.guild:
-            cat["guild_id"] = interaction.guild.id
-        if add_xp(cat, xp):
-            msg += " ✨ Ele subiu de level!"
-        db.save_cat(cat)
-        await interaction.response.edit_message(content=msg, embed=cat_embed(cat), view=CatCareView(interaction.user.id))
+        await daily.callback(interaction)
 
-    @discord.ui.button(label="Alimentar", emoji="🍗", style=discord.ButtonStyle.success)
-    async def feed(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.update_cat(interaction, "feed")
+    @discord.ui.button(label="Loja", style=discord.ButtonStyle.primary)
+    async def shop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await loja.callback(interaction)
 
-    @discord.ui.button(label="Brincar", emoji="🧶", style=discord.ButtonStyle.primary)
-    async def play(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.update_cat(interaction, "play")
-
-    @discord.ui.button(label="Carinho", emoji="💖", style=discord.ButtonStyle.secondary)
-    async def pet(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.update_cat(interaction, "pet")
-
-    @discord.ui.button(label="Banho", emoji="🧼", style=discord.ButtonStyle.secondary)
-    async def clean(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.update_cat(interaction, "clean")
-
-    @discord.ui.button(label="Dormir", emoji="😴", style=discord.ButtonStyle.secondary)
-    async def sleep(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.update_cat(interaction, "sleep")
+    @discord.ui.button(label="Ranking", style=discord.ButtonStyle.secondary)
+    async def rank_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await rank.callback(interaction, RANK_CHOICES[0])
 
 
-class CatBot(commands.Bot):
+class AstraBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         super().__init__(command_prefix="!", intents=intents)
@@ -325,224 +302,248 @@ class CatBot(commands.Bot):
         await self.tree.sync()
 
 
-bot = CatBot()
-ITEM_CHOICES = [app_commands.Choice(name=f"{data['emoji']} {data['name']}", value=item_id) for item_id, data in SHOP.items()]
+bot = AstraBot()
 
 
 @bot.event
 async def on_ready():
-    print(f"✅ {bot.user} online | {BRAND_NAME} carregado")
+    print(f"{bot.user} online | {BRAND_NAME}")
 
 
-@bot.tree.command(name="adotar", description="Adote seu primeiro gatinho virtual. Funciona em servidor e DM.")
-@app_commands.describe(nome="Nome do seu gatinho", tipo="Tipo/cor do gatinho")
-@app_commands.choices(tipo=[
-    app_commands.Choice(name="🐈 Gatinho Laranja", value="laranja"),
-    app_commands.Choice(name="🐈‍⬛ Gatinho Preto", value="preto"),
-    app_commands.Choice(name="🤍 Gatinho Branco", value="branco"),
-    app_commands.Choice(name="🩶 Gatinho Cinza", value="cinza"),
-    app_commands.Choice(name="😺 Gatinho Siamês", value="siames"),
-])
-async def adotar(interaction: discord.Interaction, nome: str, tipo: app_commands.Choice[str]):
-    if db.get_cat(interaction.user.id):
-        await interaction.response.send_message("🐾 Você já tem um gatinho. Use `/meu-gato` para ver ele.", ephemeral=True)
-        return
-    clean_name = nome.strip()[:24]
-    if len(clean_name) < 2:
-        await interaction.response.send_message("Escolha um nome com pelo menos 2 letras.", ephemeral=True)
-        return
-    cat = db.create_cat(interaction.user.id, context_id(interaction), str(interaction.user), clean_name, tipo.value)
-    embed = cat_embed(cat, title=f"🎉 Adoção concluída: {cat_emoji(cat)} {clean_name}")
-    embed.description = f"{interaction.user.mention} adotou **{clean_name}** em **{context_name(interaction)}**! Cuide bem dele todos os dias."
-    await interaction.response.send_message(embed=embed, view=CatCareView(interaction.user.id))
-
-
-@bot.tree.command(name="meu-gato", description="Veja o status do seu gatinho. Funciona em servidor e DM.")
-async def meu_gato(interaction: discord.Interaction):
-    cat = await require_cat(interaction)
-    if not cat:
-        return
-    await interaction.response.send_message(embed=cat_embed(cat), view=CatCareView(interaction.user.id))
-
-
-@bot.tree.command(name="nomear", description="Troque o nome do seu gatinho.")
-@app_commands.describe(novo_nome="Novo nome do gatinho")
-async def nomear(interaction: discord.Interaction, novo_nome: str):
-    cat = await require_cat(interaction)
-    if not cat:
-        return
-    clean = novo_nome.strip()[:24]
-    if len(clean) < 2:
-        await interaction.response.send_message("Escolha um nome com pelo menos 2 letras.", ephemeral=True)
-        return
-    old = cat["name"]
-    cat["name"] = clean
-    db.save_cat(cat)
-    await interaction.response.send_message(f"✅ Nome alterado de **{old}** para **{clean}**.", embed=cat_embed(cat))
-
-
-@bot.tree.command(name="daily", description="Pegue moedas diárias para cuidar do seu gatinho.")
-async def daily(interaction: discord.Interaction):
-    cat = await require_cat(interaction)
-    if not cat:
-        return
-    if cat.get("last_daily") == today_key():
-        await interaction.response.send_message("⏰ Você já pegou seu prêmio diário hoje. Volte amanhã.", ephemeral=True)
-        return
-    reward = random.randint(90, 160)
-    cat["coins"] += reward
-    cat["last_daily"] = today_key()
-    if interaction.guild:
-        cat["guild_id"] = interaction.guild.id
-    leveled = add_xp(cat, 15)
-    db.save_cat(cat)
-    text = f"🎁 Você recebeu **{reward} moedas** para cuidar do seu gatinho."
-    if leveled:
-        text += " ✨ Seu gatinho subiu de level!"
-    await interaction.response.send_message(text, embed=cat_embed(cat))
-
-
-@bot.tree.command(name="trabalhar", description="Faça uma tarefa rápida para ganhar moedas.")
-async def trabalhar(interaction: discord.Interaction):
-    cat = await require_cat(interaction)
-    if not cat:
-        return
-    current = now_ts()
-    cooldown = 20 * 60
-    remaining = cooldown - (current - int(cat.get("last_work", 0)))
-    if remaining > 0:
-        minutes = max(1, remaining // 60)
-        await interaction.response.send_message(f"⏰ Espere mais **{minutes} min** para trabalhar de novo.", ephemeral=True)
-        return
-    reward = random.randint(35, 90)
-    jobs = ["ajudou numa lojinha de pets", "tirou fotos fofas do gatinho", "achou moedinhas no sofá", "entregou sachês para outros gatos", "viralizou por 5 minutos"]
-    cat["coins"] += reward
-    cat["last_work"] = current
-    cat["energy"] = clamp(cat["energy"] - 8)
-    if interaction.guild:
-        cat["guild_id"] = interaction.guild.id
-    leveled = add_xp(cat, 18)
-    db.save_cat(cat)
-    text = f"💼 Você {random.choice(jobs)} e ganhou **{reward} moedas**."
-    if leveled:
-        text += " ✨ Level up!"
-    await interaction.response.send_message(text, embed=cat_embed(cat))
-
-
-@bot.tree.command(name="loja", description="Veja a loja de itens para gatinhos.")
-async def loja(interaction: discord.Interaction):
-    embed = discord.Embed(title="🛒 Loja dos Gatinhos", description="Use `/comprar` para comprar e `/usar` para usar.", color=COLOR_MAIN, timestamp=datetime.now(timezone.utc))
-    for item_id, item in SHOP.items():
-        embed.add_field(name=f"{item['emoji']} {item['name']} — {item['price']} moedas", value=f"ID: `{item_id}` | {item['desc']}", inline=False)
-    embed.set_footer(text=BRAND_NAME)
+@bot.tree.command(name="demo", description="Mostra uma vitrine rápida do Astra Social.")
+async def demo(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title=f"{e('DIAMANTE')} {BRAND_NAME} — Demo",
+        description=(
+            f"{e('INFO')} Um bot personalizado com a cara da comunidade.\n\n"
+            f"{e('PERFIL')} Perfil social\n"
+            f"{e('MOEDA')} Economia própria\n"
+            f"{e('RANKING')} Ranking\n"
+            f"{e('LOJA')} Loja e inventário\n"
+            f"{e('BADGE')} Badges exclusivas\n"
+            f"{e('ANUNCIO')} Embeds bonitos\n\n"
+            f"-# Use `/perfil`, `/daily`, `/loja`, `/rank` e `/embed-demo` para testar."
+        ),
+        color=COLOR_MAIN,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="template vendável para servidores Discord")
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="comprar", description="Compre itens para seu gatinho.")
-@app_commands.describe(item="Item da loja", quantidade="Quantidade")
+@bot.tree.command(name="perfil", description="Mostra seu perfil ou o perfil de outro membro.")
+@app_commands.describe(membro="Membro que você quer ver")
+async def perfil(interaction: discord.Interaction, membro: discord.Member | None = None):
+    target = membro or interaction.user
+    user = get_profile(interaction, target)
+    await interaction.response.send_message(embed=profile_embed(target, user), view=ProfileView(target.id))
+
+
+@bot.tree.command(name="setbio", description="Configura a bio do seu perfil.")
+@app_commands.describe(texto="Sua nova bio")
+async def setbio(interaction: discord.Interaction, texto: str):
+    user = get_profile(interaction)
+    user["bio"] = clean_text(texto, 140)
+    add_xp(user, 10)
+    db.save_user(user)
+    await interaction.response.send_message(
+        f"{e('SUCESSO')} Bio atualizada com sucesso.",
+        embed=profile_embed(interaction.user, user),
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="daily", description="Resgata sua recompensa diária.")
+async def daily(interaction: discord.Interaction):
+    user = get_profile(interaction)
+    if user.get("last_daily") == today_key():
+        await interaction.response.send_message(f"{e('TEMPO')} Você já pegou o daily hoje. Volte amanhã.", ephemeral=True)
+        return
+    reward = random.randint(120, 230)
+    user["coins"] += reward
+    user["last_daily"] = today_key()
+    leveled = add_xp(user, 25)
+    db.save_user(user)
+    msg = f"{e('PRESENTE')} Você recebeu **{reward} {CURRENCY_NAME}**."
+    if leveled:
+        msg += f"\n{e('LEVEL')} Você subiu de level!"
+    await interaction.response.send_message(msg, embed=profile_embed(interaction.user, user))
+
+
+@bot.tree.command(name="trabalhar", description="Trabalhe para ganhar moedas e XP.")
+async def trabalhar(interaction: discord.Interaction):
+    user = get_profile(interaction)
+    current = now_ts()
+    cooldown = 20 * 60
+    remaining = cooldown - (current - int(user.get("last_work", 0)))
+    if remaining > 0:
+        await interaction.response.send_message(f"{e('TEMPO')} Espere mais **{max(1, remaining // 60)} min** para trabalhar de novo.", ephemeral=True)
+        return
+    jobs = [
+        "criou um embed bonito para o servidor",
+        "ajudou a organizar a comunidade",
+        "entregou uma encomenda da loja",
+        "participou de um evento rápido",
+        "achou moedas escondidas no servidor",
+    ]
+    reward = random.randint(60, 140)
+    user["coins"] += reward
+    user["last_work"] = current
+    leveled = add_xp(user, 35)
+    db.save_user(user)
+    msg = f"{e('TRABALHAR')} Você {random.choice(jobs)} e ganhou **{reward} {CURRENCY_NAME}**."
+    if leveled:
+        msg += f"\n{e('LEVEL')} Level up!"
+    await interaction.response.send_message(msg, embed=profile_embed(interaction.user, user))
+
+
+@bot.tree.command(name="rep", description="Dá reputação para alguém.")
+@app_commands.describe(membro="Membro que vai receber reputação")
+async def rep(interaction: discord.Interaction, membro: discord.Member):
+    if membro.id == interaction.user.id:
+        await interaction.response.send_message(f"{e('ERRO')} Você não pode dar reputação para si mesmo.", ephemeral=True)
+        return
+    giver = get_profile(interaction)
+    current = now_ts()
+    cooldown = 12 * 60 * 60
+    remaining = cooldown - (current - int(giver.get("last_rep", 0)))
+    if remaining > 0:
+        hours = max(1, remaining // 3600)
+        await interaction.response.send_message(f"{e('TEMPO')} Você só pode dar rep novamente em **{hours}h**.", ephemeral=True)
+        return
+    receiver = get_profile(interaction, membro)
+    receiver["rep"] += 1
+    giver["last_rep"] = current
+    add_xp(giver, 10)
+    add_xp(receiver, 15)
+    db.save_user(giver)
+    db.save_user(receiver)
+    await interaction.response.send_message(f"{e('ESTRELA')} {interaction.user.mention} deu reputação para {membro.mention}.")
+
+
+@bot.tree.command(name="loja", description="Mostra a loja da comunidade.")
+async def loja(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title=f"{e('LOJA')} Loja da Comunidade",
+        description=f"Use `/comprar` para comprar itens com {e('MOEDA')} **{CURRENCY_NAME}**.",
+        color=COLOR_MAIN,
+        timestamp=datetime.now(timezone.utc),
+    )
+    for item_id, item in SHOP_ITEMS.items():
+        embed.add_field(
+            name=f"{item['emoji']} {item['name']} — {item['price']} coins",
+            value=f"ID: `{item_id}`\n{item['desc']}",
+            inline=False,
+        )
+    embed.set_footer(text=f"{BRAND_NAME} • loja configurável")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="comprar", description="Compra um item da loja.")
+@app_commands.describe(item="Item que deseja comprar")
 @app_commands.choices(item=ITEM_CHOICES)
-async def comprar(interaction: discord.Interaction, item: app_commands.Choice[str], quantidade: int = 1):
-    cat = await require_cat(interaction)
-    if not cat:
+async def comprar(interaction: discord.Interaction, item: app_commands.Choice[str]):
+    user = get_profile(interaction)
+    data = SHOP_ITEMS[item.value]
+    if user["coins"] < data["price"]:
+        await interaction.response.send_message(f"{e('ERRO')} Você não tem moedas suficientes.", ephemeral=True)
         return
-    if quantidade < 1 or quantidade > 20:
-        await interaction.response.send_message("A quantidade precisa ser entre 1 e 20.", ephemeral=True)
-        return
-    data = SHOP[item.value]
-    total = data["price"] * quantidade
-    if cat["coins"] < total:
-        await interaction.response.send_message(f"🪙 Você precisa de **{total} moedas**, mas só tem **{cat['coins']}**.", ephemeral=True)
-        return
-    cat["coins"] -= total
-    db.save_cat(cat)
-    db.add_item(interaction.user.id, item.value, quantidade)
-    await interaction.response.send_message(f"✅ Comprou **{quantidade}x {data['emoji']} {data['name']}** por **{total} moedas**.", embed=cat_embed(cat))
+    user["coins"] -= data["price"]
+    if data["type"] == "badge":
+        badges = [b for b in user.get("badges", "").split(",") if b]
+        if data["badge"] not in badges:
+            badges.append(data["badge"])
+        user["badges"] = ",".join(badges)
+        msg = f"{e('SUCESSO')} Você comprou a badge **{data['name']}**."
+    else:
+        reward = random.randint(80, 280)
+        user["coins"] += reward
+        msg = f"{e('CAIXA')} Você abriu uma caixa e ganhou **{reward} {CURRENCY_NAME}**."
+    add_xp(user, 20)
+    db.add_item(interaction.user.id, item.value, 1)
+    db.save_user(user)
+    await interaction.response.send_message(msg, embed=profile_embed(interaction.user, user))
 
 
-@bot.tree.command(name="inventario", description="Veja seus itens comprados.")
+@bot.tree.command(name="inventario", description="Mostra seu inventário.")
 async def inventario(interaction: discord.Interaction):
-    cat = await require_cat(interaction)
-    if not cat:
-        return
+    get_profile(interaction)
     inv = db.inventory(interaction.user.id)
-    embed = discord.Embed(title="🎒 Inventário", color=COLOR_MAIN, timestamp=datetime.now(timezone.utc))
+    embed = discord.Embed(title=f"{e('INVENTARIO')} Inventário", color=COLOR_MAIN, timestamp=datetime.now(timezone.utc))
     if not inv:
-        embed.description = "Seu inventário está vazio. Use `/loja` para comprar itens."
+        embed.description = f"{e('CAIXA')} Seu inventário está vazio. Use `/loja`."
     else:
         lines = []
         for row in inv:
-            item = SHOP.get(row["item_id"])
+            item = SHOP_ITEMS.get(row["item_id"])
             if item:
-                lines.append(f"{item['emoji']} **{item['name']}** x{row['quantity']} — ID `{row['item_id']}`")
-        embed.description = "\n".join(lines) if lines else "Nenhum item válido encontrado."
-    embed.set_footer(text=BRAND_NAME)
-    await interaction.response.send_message(embed=embed)
-
-
-@bot.tree.command(name="usar", description="Use um item do inventário no seu gatinho.")
-@app_commands.describe(item="Item que você quer usar")
-@app_commands.choices(item=ITEM_CHOICES)
-async def usar(interaction: discord.Interaction, item: app_commands.Choice[str]):
-    cat = await require_cat(interaction)
-    if not cat:
-        return
-    data = SHOP[item.value]
-    if not db.use_item(interaction.user.id, item.value):
-        await interaction.response.send_message("❌ Você não tem esse item no inventário.", ephemeral=True)
-        return
-    kind = data["kind"]
-    if kind == "food":
-        cat["hunger"] = clamp(cat["hunger"] + data["power"])
-        cat["happiness"] = clamp(cat["happiness"] + 3)
-    elif kind == "toy":
-        cat["happiness"] = clamp(cat["happiness"] + data["power"])
-        cat["energy"] = clamp(cat["energy"] - 5)
-    elif kind == "bed":
-        cat["energy"] = clamp(cat["energy"] + data["power"])
-    else:
-        cat["happiness"] = clamp(cat["happiness"] + 10)
-    if interaction.guild:
-        cat["guild_id"] = interaction.guild.id
-    leveled = add_xp(cat, 15)
-    db.save_cat(cat)
-    msg = f"✅ Você usou **{data['emoji']} {data['name']}** em **{cat['name']}**."
-    if leveled:
-        msg += " ✨ Ele subiu de level!"
-    await interaction.response.send_message(msg, embed=cat_embed(cat), view=CatCareView(interaction.user.id))
-
-
-@bot.tree.command(name="ranking", description="Veja o ranking dos gatinhos. Em DM, mostra ranking global.")
-async def ranking(interaction: discord.Interaction):
-    guild_id = interaction.guild.id if interaction.guild else None
-    rows = db.leaderboard(guild_id, 10)
-    title = "🏆 Ranking dos Gatinhos" if interaction.guild else "🌎 Ranking Global dos Gatinhos"
-    embed = discord.Embed(title=title, color=COLOR_MAIN, timestamp=datetime.now(timezone.utc))
-    if not rows:
-        embed.description = "Ainda não tem gatinhos. Use `/adotar`."
-    else:
-        medals = ["🥇", "🥈", "🥉"]
-        lines = []
-        for index, cat in enumerate(rows, start=1):
-            medal = medals[index - 1] if index <= 3 else f"`#{index}`"
-            tutor = f"<@{cat['user_id']}>" if interaction.guild else cat.get("owner_name", f"ID {cat['user_id']}")
-            lines.append(f"{medal} {cat_emoji(cat)} **{cat['name']}** — Level **{cat['level']}** | Tutor: {tutor}")
+                lines.append(f"{item['emoji']} **{item['name']}** x{row['quantity']}")
         embed.description = "\n".join(lines)
     embed.set_footer(text=BRAND_NAME)
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="ajuda-gato", description="Mostra todos os comandos do bot de gatinhos.")
-async def ajuda_gato(interaction: discord.Interaction):
-    embed = discord.Embed(title=f"🐾 {BRAND_NAME}", description="Um bot fofo de cuidar de gatinhos virtuais. Funciona em servidor e DM.", color=COLOR_MAIN)
-    embed.add_field(name="Começo", value="`/adotar` — adota um gatinho\n`/meu-gato` — vê o status\n`/nomear` — troca o nome", inline=False)
-    embed.add_field(name="Cuidados", value="Use os botões em `/meu-gato` para alimentar, brincar, dar carinho, banho e dormir.", inline=False)
-    embed.add_field(name="Economia", value="`/daily` — prêmio diário\n`/trabalhar` — ganha moedas\n`/loja` `/comprar` `/inventario` `/usar`", inline=False)
-    embed.add_field(name="Ranking", value="`/ranking` — no servidor mostra ranking do servidor; na DM mostra ranking global.", inline=False)
+@bot.tree.command(name="rank", description="Ranking do servidor por level, moedas ou reputação.")
+@app_commands.describe(tipo="Tipo de ranking")
+@app_commands.choices(tipo=RANK_CHOICES)
+async def rank(interaction: discord.Interaction, tipo: app_commands.Choice[str] = RANK_CHOICES[0]):
+    if not interaction.guild:
+        await interaction.response.send_message(f"{e('AVISO')} Ranking funciona melhor dentro de um servidor.", ephemeral=True)
+        return
+    get_profile(interaction)
+    rows = db.ranking(interaction.guild.id, tipo.value)
+    embed = discord.Embed(
+        title=f"{e('RANKING')} Ranking — {tipo.name}",
+        color=COLOR_MAIN,
+        timestamp=datetime.now(timezone.utc),
+    )
+    if not rows:
+        embed.description = "Ninguém entrou no ranking ainda."
+    else:
+        lines = []
+        medals = [e("COROA"), e("DIAMANTE"), e("ESTRELA")]
+        for index, user in enumerate(rows, start=1):
+            medal = medals[index - 1] if index <= 3 else f"`#{index}`"
+            value = user["level"] if tipo.value == "level" else user["coins"] if tipo.value == "coins" else user["rep"]
+            lines.append(f"{medal} <@{user['user_id']}> — **{value}**")
+        embed.description = "\n".join(lines)
+    embed.set_footer(text=f"{BRAND_NAME} • ranking personalizável")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="embed-demo", description="Cria um anúncio bonito de demonstração.")
+@app_commands.describe(titulo="Título do anúncio", texto="Texto do anúncio")
+async def embed_demo(interaction: discord.Interaction, titulo: str = "Evento da Comunidade", texto: str = "Hoje teremos evento valendo recompensas especiais."):
+    embed = discord.Embed(
+        title=f"{e('ANUNCIO')} {clean_text(titulo, 80)}",
+        description=(
+            f"{e('SETA')} {clean_text(texto, 600)}\n\n"
+            f"{e('PRESENTE')} **Recompensas:** moedas, badges e destaque no ranking\n"
+            f"{e('TEMPO')} **Status:** aberto para participação"
+        ),
+        color=COLOR_MAIN,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=f"{BRAND_NAME} • anúncio personalizado")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="ajuda", description="Mostra os comandos da demo.")
+async def ajuda(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title=f"{e('INFO')} Comandos da Demo",
+        description="Teste os principais sistemas do bot personalizável.",
+        color=COLOR_MAIN,
+    )
+    embed.add_field(name=f"{e('PERFIL')} Perfil", value="`/perfil` `/setbio` `/rep`", inline=False)
+    embed.add_field(name=f"{e('MOEDA')} Economia", value="`/daily` `/trabalhar` `/rank`", inline=False)
+    embed.add_field(name=f"{e('LOJA')} Loja", value="`/loja` `/comprar` `/inventario`", inline=False)
+    embed.add_field(name=f"{e('ANUNCIO')} Demonstração", value="`/demo` `/embed-demo`", inline=False)
     embed.set_footer(text=BRAND_NAME)
     await interaction.response.send_message(embed=embed)
 
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
-        raise RuntimeError("Defina a variável DISCORD_TOKEN no Railway.")
+        raise RuntimeError("Defina DISCORD_TOKEN no Railway.")
     bot.run(DISCORD_TOKEN)
