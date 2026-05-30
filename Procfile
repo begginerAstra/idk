@@ -1,1 +1,1 @@
-worker: python main.py
+worker: python astra_social.py
